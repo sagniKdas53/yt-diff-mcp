@@ -47,6 +47,7 @@ def main() -> int:
         names = {tool["name"] for tool in tools}
         assert "add_video" in names
         assert "download" in names
+        assert "list_individual_videos" in names
         if "--health" in sys.argv:
             send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "health_check", "arguments": {}}})
             print(json.dumps(recv(proc), indent=2))

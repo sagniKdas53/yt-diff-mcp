@@ -170,18 +170,33 @@ def tool_search_playlists(args: dict[str, Any]) -> dict[str, Any]:
     return content(authed_post("/getplay", payload, timeout=TIMEOUT))
 
 
-def tool_search_videos(args: dict[str, Any]) -> dict[str, Any]:
+def get_sublist_payload(args: dict[str, Any], default_playlist_url: str = "init") -> dict[str, Any]:
     query = args.get("query", "")
     if args.get("video_id"):
         query = "global:" + extract_video_id(str(args["video_id"]))
-    payload = {
+    return {
         "start": int(args.get("start", 0)),
         "stop": int(args.get("stop", 20)),
         "sortDownloaded": bool(args.get("sort_downloaded", False)),
         "query": query,
-        "url": args.get("playlist_url", "init"),
+        "url": args.get("playlist_url", default_playlist_url),
     }
-    return content(authed_post("/getsub", payload, timeout=TIMEOUT))
+
+
+def tool_search_videos(args: dict[str, Any]) -> dict[str, Any]:
+    """Search/list videos in a playlist sublist via /getsub."""
+    return content(authed_post("/getsub", get_sublist_payload(args), timeout=TIMEOUT))
+
+
+def tool_list_individual_videos(args: dict[str, Any]) -> dict[str, Any]:
+    """List standalone videos stored in yt-diff's system playlist named None."""
+    payload = get_sublist_payload(args, default_playlist_url="None")
+    payload["url"] = "None"
+    result = authed_post("/getsub", payload, timeout=TIMEOUT)
+    if isinstance(result.get("body"), dict) and isinstance(result["body"].get("rows"), list):
+        rows = result["body"]["rows"]
+        result["newest_item"] = rows[-1] if rows else None
+    return content(result)
 
 
 def tool_set_playlist_monitoring(args: dict[str, Any]) -> dict[str, Any]:
@@ -233,7 +248,8 @@ TOOLS: dict[str, tuple[str, dict[str, Any], Callable[[dict[str, Any]], dict[str,
     "add_video": ("Add one video URL to yt-diff. YouTube URLs are cleaned to their watch?v= ID form.", {"type": "object", "properties": {"url": {"type": "string"}, "chunk_size": {"type": ["integer", "string"], "default": 1}, "monitoring_type": {"type": "string", "default": "N/A"}, "sleep": {"type": "boolean", "default": True}}, "required": ["url"]}, tool_add_video),
     "add_videos": ("Add multiple video URLs/playlists to yt-diff in one listing request.", {"type": "object", "properties": {"urls": {"type": "array", "items": {"type": "string"}}, "chunk_size": {"type": ["integer", "string"], "default": 1}, "monitoring_type": {"type": "string", "default": "N/A"}, "sleep": {"type": "boolean", "default": True}}, "required": ["urls"]}, tool_add_videos),
     "search_playlists": ("Search/list playlists using yt-diff /getplay.", {"type": "object", "properties": {"query": {"type": "string", "default": ""}, "start": {"type": "integer", "default": 0}, "stop": {"type": "integer", "default": 20}, "sort": {"type": "string", "default": "updatedAt"}, "order": {"type": "string", "default": "2"}}}, tool_search_playlists),
-    "search_videos": ("Search/list videos using yt-diff /getsub. Provide video_id to search global:<id>.", {"type": "object", "properties": {"query": {"type": "string", "default": ""}, "video_id": {"type": "string"}, "playlist_url": {"type": "string", "default": "init"}, "start": {"type": "integer", "default": 0}, "stop": {"type": "integer", "default": 20}, "sort_downloaded": {"type": "boolean", "default": False}}}, tool_search_videos),
+    "search_videos": ("Search/list videos in a playlist sublist using yt-diff /getsub. Set playlist_url to the playlist URL; standalone videos live under playlist_url='None'. Provide video_id to search global:<id>.", {"type": "object", "properties": {"query": {"type": "string", "default": ""}, "video_id": {"type": "string"}, "playlist_url": {"type": "string", "default": "init"}, "start": {"type": "integer", "default": 0}, "stop": {"type": "integer", "default": 20}, "sort_downloaded": {"type": "boolean", "default": False}}}, tool_search_videos),
+    "list_individual_videos": ("List/search standalone single videos stored in yt-diff's system playlist named None. Without a query, the newest individual video should be the last returned row and is also returned as newest_item.", {"type": "object", "properties": {"query": {"type": "string", "default": ""}, "video_id": {"type": "string"}, "start": {"type": "integer", "default": 0}, "stop": {"type": "integer", "default": 20}, "sort_downloaded": {"type": "boolean", "default": False}}}, tool_list_individual_videos),
     "set_playlist_monitoring": ("Update monitoring/watch mode for a playlist URL via /watch.", {"type": "object", "properties": {"url": {"type": "string"}, "watch": {"type": "string", "default": "N/A"}}, "required": ["url"]}, tool_set_playlist_monitoring),
     "download": ("Trigger download for one or more video URLs via /download.", {"type": "object", "properties": {"url": {"type": "string"}, "urls": {"type": "array", "items": {"type": "string"}}, "playlist_url": {"type": "string"}}}, tool_download),
     "reindex_all": ("Trigger yt-diff reindex-all job via /reindexall.", {"type": "object", "properties": {"start": {"type": ["integer", "string"]}, "stop": {"type": ["integer", "string"]}, "site_filter": {"type": "string"}, "chunk_size": {"type": ["integer", "string"]}}}, tool_reindex_all),

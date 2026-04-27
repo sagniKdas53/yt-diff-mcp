@@ -11,8 +11,9 @@ It is intentionally dependency-free at runtime: it speaks MCP JSON-RPC over stdi
 | `health_check` | Check API reachability and login status without exposing credentials. |
 | `add_video` | Add one URL to yt-diff via `/list`. YouTube URLs are normalized to `watch?v=...`. |
 | `add_videos` | Add multiple URLs in one listing request. |
-| `search_playlists` | Search/list playlists via `/getplay`. |
-| `search_videos` | Search/list videos via `/getsub`; supports `video_id` shorthand. |
+| `search_playlists` | Search/list top-level playlist rows via `/getplay`. |
+| `search_videos` | Search/list videos in a playlist sublist via `/getsub`; set `playlist_url` to the playlist URL. Standalone videos live under `playlist_url: "None"`. |
+| `list_individual_videos` | Convenience wrapper for `/getsub` with `url: "None"`; returns standalone videos and `newest_item` as the last returned row. |
 | `set_playlist_monitoring` | Update a playlist's monitoring mode via `/watch`. |
 | `download` | Trigger downloads via `/download`. |
 | `reindex_all` | Trigger `/reindexall`. |
@@ -93,6 +94,15 @@ mcp_servers:
   }
 }
 ```
+
+## yt-diff data model
+
+yt-diff has two related lists:
+
+1. **Playlists list** — top-level entries created by listing playlist/profile/channel URLs.
+2. **Sub list** — videos mapped inside a specific playlist. To fetch videos for a playlist, call `/getsub` with the playlist URL in the `url` field.
+
+Standalone single-video URLs do not belong to a real playlist. yt-diff places them in a system playlist named `None`. To verify or browse individually added videos, use `list_individual_videos`, or call `search_videos` with `playlist_url: "None"`. When listing individual videos without a query, the newest standalone item should appear at the end of the returned rows.
 
 ## Quick protocol smoke test
 
