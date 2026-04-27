@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "yt_diff": {
+      "command": "yt-diff-mcp",
+      "env": {
+        "YT_DIFF_BASE": "http://192.168.0.110:8888/ytdiff",
+        "YT_DIFF_USERNAME": "your_username",
+        "YT_DIFF_PASSWORD": "your_password"
+      }
+    }
+  }
+}
