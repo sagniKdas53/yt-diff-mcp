@@ -45,9 +45,32 @@ def main() -> int:
         send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
         tools = recv(proc)["result"]["tools"]
         names = {tool["name"] for tool in tools}
-        assert "add_video" in names
-        assert "download" in names
-        assert "list_individual_videos" in names
+        expected = {
+            # health
+            "health_check",
+            # create
+            "add_playlist",
+            "add_video",
+            "add_videos",
+            # read
+            "get_playlist",
+            "search_playlists",
+            "search_videos",
+            "list_individual_videos",
+            # update
+            "set_playlist_monitoring",
+            "download",
+            # delete
+            "delete_playlist",
+            "delete_videos",
+            # advanced
+            "reindex_all",
+            "raw_post",
+        }
+        missing = expected - names
+        if missing:
+            print(f"FAIL: missing tools: {', '.join(sorted(missing))}", file=sys.stderr)
+            return 1
         if "--health" in sys.argv:
             send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "health_check", "arguments": {}}})
             print(json.dumps(recv(proc), indent=2))

@@ -227,6 +227,131 @@ def tool_reindex_all(args: dict[str, Any]) -> dict[str, Any]:
     return content(authed_post("/reindexall", payload, timeout=TIMEOUT))
 
 
+def tool_add_playlist(args: dict[str, Any]) -> dict[str, Any]:
+    """Add a playlist, channel, or profile URL to yt-diff via /list.
+
+    Use this for playlist/channel/profile URLs. For individual video URLs use
+    add_video or add_videos instead. Monitoring stays N/A by default; use
+    set_playlist_monitoring afterward to change it.
+    """
+    url = str(args.get("playlist_url", "")).strip()
+    if not url:
+        raise ValueError("playlist_url is required")
+    payload = {
+        "urlList": [url],
+        "chunkSize": args.get("chunk_size", 50),
+        "monitoringType": args.get("monitoring_type", "N/A"),
+        "sleep": bool(args.get("sleep", True)),
+    }
+    result = authed_post("/list", payload, timeout=TIMEOUT)
+    result["playlist_url"] = url
+    return content(result)
+
+
+def tool_get_playlist(args: dict[str, Any]) -> dict[str, Any]:
+    """Fetch a playlist by URL and return its metadata plus sub-list video count.
+
+    Calls /getplay with query='url:<playlist_url>' to find the playlist row(s),
+    then calls /getsub to get the total video count for that playlist.
+    Use playlist_url='None' to inspect the individual-videos bucket.
+    This is the primary validation tool: if count > 0 the playlist has items.
+    """
+    playlist_url = str(args.get("playlist_url", "")).strip()
+    if not playlist_url:
+        raise ValueError("playlist_url is required")
+
+    # Fetch playlist metadata row(s)
+    getplay_payload: dict[str, Any] = {
+        "start": 0,
+        "stop": 20,
+        "sort": "updatedAt",
+        "order": "2",
+        "query": f"url:{playlist_url}",
+    }
+    playlist_result = authed_post("/getplay", getplay_payload, timeout=TIMEOUT)
+
+    # Fetch sub-list video count (stop=1 is enough to get the count field)
+    getsub_payload: dict[str, Any] = {
+        "start": 0,
+        "stop": 1,
+        "sortDownloaded": False,
+        "query": "",
+        "url": playlist_url,
+    }
+    getsub_result = authed_post("/getsub", getsub_payload, timeout=TIMEOUT)
+
+    video_count: int | None = None
+    if isinstance(getsub_result.get("body"), dict):
+        video_count = getsub_result["body"].get("count")
+
+    return content({
+        "playlist_url": playlist_url,
+        "playlist": playlist_result,
+        "video_count": video_count,
+    })
+
+
+def tool_delete_playlist(args: dict[str, Any]) -> dict[str, Any]:
+    """Delete a playlist entry from yt-diff via /delplay.
+
+    The backend blocks deletion of the 'None' system playlist.
+    By default none of the flags are set, so this is a no-op unless at least
+    one of delete_all_videos or delete_playlist is True.
+
+    Flags:
+      delete_all_videos  — remove all video references from this playlist
+      delete_playlist    — delete the playlist row itself
+      cleanup            — also delete files from disk (only if delete_playlist
+                          or delete_all_videos is set)
+    """
+    playlist_url = str(args.get("playlist_url", "")).strip()
+    if not playlist_url:
+        raise ValueError("playlist_url is required")
+    payload = {
+        "playListUrl": playlist_url,
+        "deleteAllVideosInPlaylist": bool(args.get("delete_all_videos", False)),
+        "deletePlaylist": bool(args.get("delete_playlist", False)),
+        "cleanUp": bool(args.get("cleanup", False)),
+    }
+    return content(authed_post("/delplay", payload, timeout=TIMEOUT))
+
+
+def tool_delete_videos(args: dict[str, Any]) -> dict[str, Any]:
+    """Remove video entries from a playlist sublist via /delsub.
+
+    Provide either mapping_ids (preferred, from /getsub row 'id' field) or
+    video_urls — at least one must be non-empty.
+
+    Flags:
+      cleanup              — delete downloaded files from disk; only has effect
+                            for videos where downloadStatus is true
+      delete_video_mappings — remove the mapping row from the sublist
+                             (default true)
+      delete_videos_in_db  — hard-delete the VideoMetadata row entirely
+                             (default false; use with care)
+    """
+    playlist_url = str(args.get("playlist_url", "")).strip()
+    if not playlist_url:
+        raise ValueError("playlist_url is required")
+    mapping_ids = args.get("mapping_ids") or []
+    video_urls = args.get("video_urls") or []
+    if not isinstance(mapping_ids, list):
+        raise ValueError("mapping_ids must be an array")
+    if not isinstance(video_urls, list):
+        raise ValueError("video_urls must be an array")
+    if not mapping_ids and not video_urls:
+        raise ValueError("provide at least one of mapping_ids or video_urls")
+    payload: dict[str, Any] = {
+        "playListUrl": playlist_url,
+        "mappingIds": [str(m) for m in mapping_ids],
+        "videoUrls": [str(u) for u in video_urls],
+        "cleanUp": bool(args.get("cleanup", False)),
+        "deleteVideoMappings": bool(args.get("delete_video_mappings", True)),
+        "deleteVideosInDB": bool(args.get("delete_videos_in_db", False)),
+    }
+    return content(authed_post("/delsub", payload, timeout=TIMEOUT))
+
+
 def tool_raw_post(args: dict[str, Any]) -> dict[str, Any]:
     path = str(args.get("path", "")).strip()
     if not path.startswith("/"):
@@ -245,13 +370,85 @@ def tool_raw_post(args: dict[str, Any]) -> dict[str, Any]:
 
 TOOLS: dict[str, tuple[str, dict[str, Any], Callable[[dict[str, Any]], dict[str, Any]]]] = {
     "health_check": ("Check yt-diff reachability and authentication status without exposing credentials.", {"type": "object", "properties": {}}, tool_health_check),
+    # --- Create ---
+    "add_playlist": (
+        "Add a playlist, channel, or profile URL to yt-diff via /list. "
+        "Use this for playlist/channel/profile URLs; for individual video URLs use add_video or add_videos. "
+        "Monitoring defaults to N/A — use set_playlist_monitoring to change it afterward.",
+        {
+            "type": "object",
+            "properties": {
+                "playlist_url": {"type": "string"},
+                "chunk_size": {"type": ["integer", "string"], "default": 50},
+                "monitoring_type": {"type": "string", "default": "N/A"},
+                "sleep": {"type": "boolean", "default": True},
+            },
+            "required": ["playlist_url"],
+        },
+        tool_add_playlist,
+    ),
     "add_video": ("Add one video URL to yt-diff. YouTube URLs are cleaned to their watch?v= ID form.", {"type": "object", "properties": {"url": {"type": "string"}, "chunk_size": {"type": ["integer", "string"], "default": 1}, "monitoring_type": {"type": "string", "default": "N/A"}, "sleep": {"type": "boolean", "default": True}}, "required": ["url"]}, tool_add_video),
     "add_videos": ("Add multiple video URLs/playlists to yt-diff in one listing request.", {"type": "object", "properties": {"urls": {"type": "array", "items": {"type": "string"}}, "chunk_size": {"type": ["integer", "string"], "default": 1}, "monitoring_type": {"type": "string", "default": "N/A"}, "sleep": {"type": "boolean", "default": True}}, "required": ["urls"]}, tool_add_videos),
+    # --- Read ---
+    "get_playlist": (
+        "Fetch a playlist by URL and return its metadata plus sub-list video count in one call. "
+        "Uses /getplay (url:<playlist_url> query) then /getsub to get the count. "
+        "Use playlist_url='None' to inspect the individual-videos bucket. "
+        "If video_count > 0 the playlist has items (validation).",
+        {
+            "type": "object",
+            "properties": {
+                "playlist_url": {"type": "string"},
+            },
+            "required": ["playlist_url"],
+        },
+        tool_get_playlist,
+    ),
     "search_playlists": ("Search/list playlists using yt-diff /getplay.", {"type": "object", "properties": {"query": {"type": "string", "default": ""}, "start": {"type": "integer", "default": 0}, "stop": {"type": "integer", "default": 20}, "sort": {"type": "string", "default": "updatedAt"}, "order": {"type": "string", "default": "2"}}}, tool_search_playlists),
     "search_videos": ("Search/list videos in a playlist sublist using yt-diff /getsub. Set playlist_url to the playlist URL; standalone videos live under playlist_url='None'. Provide video_id to search global:<id>.", {"type": "object", "properties": {"query": {"type": "string", "default": ""}, "video_id": {"type": "string"}, "playlist_url": {"type": "string", "default": "init"}, "start": {"type": "integer", "default": 0}, "stop": {"type": "integer", "default": 20}, "sort_downloaded": {"type": "boolean", "default": False}}}, tool_search_videos),
     "list_individual_videos": ("List/search standalone single videos stored in yt-diff's system playlist named None. Without a query, the newest individual video should be the last returned row and is also returned as newest_item.", {"type": "object", "properties": {"query": {"type": "string", "default": ""}, "video_id": {"type": "string"}, "start": {"type": "integer", "default": 0}, "stop": {"type": "integer", "default": 20}, "sort_downloaded": {"type": "boolean", "default": False}}}, tool_list_individual_videos),
+    # --- Update ---
     "set_playlist_monitoring": ("Update monitoring/watch mode for a playlist URL via /watch.", {"type": "object", "properties": {"url": {"type": "string"}, "watch": {"type": "string", "default": "N/A"}}, "required": ["url"]}, tool_set_playlist_monitoring),
     "download": ("Trigger download for one or more video URLs via /download.", {"type": "object", "properties": {"url": {"type": "string"}, "urls": {"type": "array", "items": {"type": "string"}}, "playlist_url": {"type": "string"}}}, tool_download),
+    # --- Delete ---
+    "delete_playlist": (
+        "Delete a playlist entry from yt-diff via /delplay. "
+        "The 'None' system playlist cannot be deleted. "
+        "All boolean flags default to false — set at least one of delete_all_videos or delete_playlist to true, otherwise nothing is deleted. "
+        "cleanup only deletes files from disk when combined with delete_playlist or delete_all_videos.",
+        {
+            "type": "object",
+            "properties": {
+                "playlist_url": {"type": "string"},
+                "delete_all_videos": {"type": "boolean", "default": False},
+                "delete_playlist": {"type": "boolean", "default": False},
+                "cleanup": {"type": "boolean", "default": False},
+            },
+            "required": ["playlist_url"],
+        },
+        tool_delete_playlist,
+    ),
+    "delete_videos": (
+        "Remove video entries from a playlist sublist via /delsub. "
+        "Provide mapping_ids (the 'id' field from /getsub rows, preferred) or video_urls — at least one must be non-empty. "
+        "cleanup deletes downloaded files from disk; only has effect when downloadStatus is true. "
+        "delete_video_mappings (default true) removes the sublist mapping row. "
+        "delete_videos_in_db (default false) hard-deletes the VideoMetadata record.",
+        {
+            "type": "object",
+            "properties": {
+                "playlist_url": {"type": "string"},
+                "mapping_ids": {"type": "array", "items": {"type": "string"}, "default": []},
+                "video_urls": {"type": "array", "items": {"type": "string"}, "default": []},
+                "cleanup": {"type": "boolean", "default": False},
+                "delete_video_mappings": {"type": "boolean", "default": True},
+                "delete_videos_in_db": {"type": "boolean", "default": False},
+            },
+            "required": ["playlist_url"],
+        },
+        tool_delete_videos,
+    ),
+    # --- Advanced ---
     "reindex_all": ("Trigger yt-diff reindex-all job via /reindexall.", {"type": "object", "properties": {"start": {"type": ["integer", "string"]}, "stop": {"type": ["integer", "string"]}, "site_filter": {"type": "string"}, "chunk_size": {"type": ["integer", "string"]}}}, tool_reindex_all),
     "raw_post": ("Advanced: POST an object payload to an allow-listed yt-diff API path.", {"type": "object", "properties": {"path": {"type": "string"}, "payload": {"type": "object"}}, "required": ["path"]}, tool_raw_post),
 }
