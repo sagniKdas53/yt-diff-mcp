@@ -34,19 +34,101 @@ def log(message: str) -> None:
     print(f"[yt-diff-mcp] {message}", file=sys.stderr, flush=True)
 
 
-def clean_youtube_url(url: str) -> str:
-    """Keep stable identifiers and drop tracking/noisy YouTube params."""
+# ---------------------------------------------------------------------------
+# URL normalization (mirrors normalizeUrl() in process-manager.ts)
+# ---------------------------------------------------------------------------
+
+# YouTube video-ID pattern (11 chars, base64url alphabet)
+_YT_VIDEO_ID_RE = re.compile(r'^[A-Za-z0-9_-]{11}$')
+_YT_HOSTS = {
+    "youtube.com", "www.youtube.com", "m.youtube.com", "www.m.youtube.com",
+    "youtu.be", "www.youtu.be",
+    "youtube-nocookie.com", "www.youtube-nocookie.com",
+}
+_IWARA_HOSTS_RE = re.compile(r'(?:^|\.)iwara\.tv$')
+_STRIP_PARAMS = {"utm_source", "utm_medium", "utm_campaign", "utm_term",
+                  "utm_content", "fbclid", "gclid", "si", "pp"}
+
+
+def _extract_yt_video_id(parsed) -> str | None:
+    """Extract YouTube video ID from various URL forms."""
+    host = parsed.netloc
+    path = parsed.path
+    qs = dict(re.findall(r'([^&=?]+)=([^&]*)', parsed.query))
+    # youtu.be/{id}
+    if host in ("youtu.be", "www.youtu.be"):
+        vid = path.lstrip("/").split("/")[0]
+        if _YT_VIDEO_ID_RE.match(vid):
+            return vid
+        return None
+    # watch?v=ID
+    v = qs.get("v", "")
+    if v and _YT_VIDEO_ID_RE.match(v):
+        return v
+    # /shorts/ID or /embed/ID
+    m = re.search(r'/(?:shorts|embed)/([A-Za-z0-9_-]{11})', path)
+    if m:
+        return m.group(1)
+    return None
+
+
+def normalize_url(url: str) -> str:
+    """Canonicalize a URL for stable deduplication, mirroring the TS normalizeUrl().
+
+    Steps:
+      1. Force https://
+      2. Strip trailing slashes from path
+      3. Remove tracking query params (utm_*, fbclid, si, pp)
+      4. Apply site-specific rules (YouTube video ID extraction, iwara slug strip)
+    """
     url = url.strip()
     if not url:
         raise ValueError("url is required")
-    m = re.search(r"(?:youtube\.com/(?:watch\?.*?v=|shorts/)|youtu\.be/)([A-Za-z0-9_-]{6,})", url)
-    if not m:
+
+    from urllib.parse import urlparse, urlunparse, urlencode, parse_qsl
+    try:
+        parsed = urlparse(url)
+    except Exception:
         return url
-    video_id = m.group(1)
-    return f"https://www.youtube.com/watch?v={video_id}"
+
+    # 1. Force https
+    parsed = parsed._replace(scheme="https")
+
+    # 2. Strip trailing slashes
+    path = parsed.path.rstrip("/") or "/"
+    parsed = parsed._replace(path=path)
+
+    # 3. Strip noise query params
+    qs_pairs = [(k, v) for k, v in parse_qsl(parsed.query) if k not in _STRIP_PARAMS]
+
+    host = parsed.netloc
+
+    # 4a. YouTube
+    if host in _YT_HOSTS:
+        vid = _extract_yt_video_id(parsed._replace(query="&".join(f"{k}={v}" for k, v in parse_qsl(parsed.query))))
+        if vid:
+            return f"https://www.youtube.com/watch?v={vid}"
+        # Non-video YouTube URL: normalize host, append /videos to channel handles
+        normalized_host = "www.youtube.com"
+        normalized_path = parsed.path
+        if "/@" in normalized_path and not normalized_path.rstrip("/").endswith("/videos"):
+            normalized_path = normalized_path.rstrip("/") + "/videos"
+        clean_qs = urlencode(qs_pairs)
+        return urlunparse(("https", normalized_host, normalized_path, "", clean_qs, ""))
+
+    # 4b. iwara.tv — strip trailing slug: /video/{id}/{slug} → /video/{id}
+    if _IWARA_HOSTS_RE.search(host):
+        m = re.match(r'(/video/[A-Za-z0-9]+)', parsed.path)
+        if m:
+            return urlunparse(("https", host, m.group(1), "", "", ""))
+
+    # Generic: rebuild with cleaned params
+    clean_qs = urlencode(qs_pairs)
+    return urlunparse(("https", host, parsed.path, "", clean_qs, ""))
 
 
 def extract_video_id(url_or_id: str) -> str:
+    """Extract a YouTube video ID from a URL or return the input if it's already an ID."""
     text = url_or_id.strip()
     m = re.search(r"(?:v=|shorts/|youtu\.be/)([A-Za-z0-9_-]{6,})", text)
     return m.group(1) if m else text
@@ -131,7 +213,7 @@ def tool_health_check(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def tool_add_video(args: dict[str, Any]) -> dict[str, Any]:
-    url = clean_youtube_url(str(args.get("url", "")))
+    url = normalize_url(str(args.get("url", "")))
     payload = {
         "urlList": [url],
         "chunkSize": args.get("chunk_size", 1),
@@ -147,7 +229,7 @@ def tool_add_videos(args: dict[str, Any]) -> dict[str, Any]:
     urls = args.get("urls") or []
     if not isinstance(urls, list) or not urls:
         raise ValueError("urls must be a non-empty array")
-    cleaned = [clean_youtube_url(str(u)) for u in urls]
+    cleaned = [normalize_url(str(u)) for u in urls]
     payload = {
         "urlList": cleaned,
         "chunkSize": args.get("chunk_size", 1),
@@ -211,7 +293,7 @@ def tool_download(args: dict[str, Any]) -> dict[str, Any]:
     urls = args.get("urls") or ([] if not args.get("url") else [args.get("url")])
     if not isinstance(urls, list) or not urls:
         raise ValueError("provide url or urls")
-    payload: dict[str, Any] = {"urlList": [str(u) for u in urls]}
+    payload: dict[str, Any] = {"urlList": [normalize_url(str(u)) for u in urls]}
     if args.get("playlist_url"):
         payload["playListUrl"] = str(args["playlist_url"])
     return content(authed_post("/download", payload, timeout=TIMEOUT))
@@ -356,7 +438,7 @@ def tool_raw_post(args: dict[str, Any]) -> dict[str, Any]:
     path = str(args.get("path", "")).strip()
     if not path.startswith("/"):
         raise ValueError("path must start with /")
-    allowed = {"/getplay", "/getsub", "/list", "/download", "/watch", "/delplay", "/delsub", "/getfile", "/getfiles", "/refreshfile", "/refreshfiles", "/reindexall", "/isregallowed"}
+    allowed = {"/getplay", "/getsub", "/list", "/download", "/watch", "/delplay", "/delsub", "/getfile", "/getfiles", "/refreshfile", "/refreshfiles", "/reindexall", "/dedup", "/isregallowed"}
     if path not in allowed:
         raise ValueError(f"path not allowed: {path}")
     payload = args.get("payload") or {}
@@ -366,6 +448,18 @@ def tool_raw_post(args: dict[str, Any]) -> dict[str, Any]:
         status, body, raw = http_post(path, payload, timeout=TIMEOUT)
         return content({"status_code": status, "body": body, "raw": raw})
     return content(authed_post(path, payload, timeout=TIMEOUT))
+
+
+def tool_deduplicate(args: dict[str, Any]) -> dict[str, Any]:
+    """Scan the database for duplicate video records (same videoId, different videoUrl)
+    and optionally merge them. Always defaults to dry_run=True for safety.
+    """
+    payload: dict[str, Any] = {
+        "dryRun": bool(args.get("dry_run", True)),
+    }
+    if args.get("site_filter"):
+        payload["siteFilter"] = str(args["site_filter"])
+    return content(authed_post("/dedup", payload, timeout=TIMEOUT))
 
 
 TOOLS: dict[str, tuple[str, dict[str, Any], Callable[[dict[str, Any]], dict[str, Any]]]] = {
@@ -450,6 +544,20 @@ TOOLS: dict[str, tuple[str, dict[str, Any], Callable[[dict[str, Any]], dict[str,
     ),
     # --- Advanced ---
     "reindex_all": ("Trigger yt-diff reindex-all job via /reindexall.", {"type": "object", "properties": {"start": {"type": ["integer", "string"]}, "stop": {"type": ["integer", "string"]}, "site_filter": {"type": "string"}, "chunk_size": {"type": ["integer", "string"]}}}, tool_reindex_all),
+    "deduplicate": (
+        "Scan the database for videos stored under multiple different URLs (same videoId, different videoUrl PK) "
+        "and optionally merge them into one canonical record. "
+        "Always defaults to dry_run=True — set dry_run=False only when you are ready to apply changes. "
+        "Use site_filter (e.g. 'iwara.tv') to scope the scan to one site.",
+        {
+            "type": "object",
+            "properties": {
+                "dry_run": {"type": "boolean", "default": True},
+                "site_filter": {"type": "string"},
+            },
+        },
+        tool_deduplicate,
+    ),
     "raw_post": ("Advanced: POST an object payload to an allow-listed yt-diff API path.", {"type": "object", "properties": {"path": {"type": "string"}, "payload": {"type": "object"}}, "required": ["path"]}, tool_raw_post),
 }
 
