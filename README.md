@@ -6,18 +6,40 @@ It is intentionally dependency-free at runtime: it speaks MCP JSON-RPC over stdi
 
 ## Tools
 
+### Content Discovery & Search
+
 | Tool | Description |
 | --- | --- |
 | `health_check` | Check API reachability and login status without exposing credentials. |
-| `add_video` | Add one URL to yt-diff via `/list`. YouTube URLs are normalized to `watch?v=...`. |
-| `add_videos` | Add multiple URLs in one listing request. |
 | `search_playlists` | Search/list top-level playlist rows via `/getplay`. |
 | `search_videos` | Search/list videos in a playlist sublist via `/getsub`; set `playlist_url` to the playlist URL. Standalone videos live under `playlist_url: "None"`. |
 | `list_individual_videos` | Convenience wrapper for `/getsub` with `url: "None"`; returns standalone videos and `newest_item` as the last returned row. |
-| `set_playlist_monitoring` | Update a playlist's monitoring mode via `/watch`. |
-| `download` | Trigger downloads via `/download`. |
-| `reindex_all` | Trigger `/reindexall`. |
-| `raw_post` | Advanced allow-listed POST escape hatch for yt-diff endpoints. |
+| `get_playlist` | Fetch a playlist by URL, returning its metadata row and the total video count in one call. |
+
+### Adding Content
+
+| Tool | Description |
+| --- | --- |
+| `add_playlist` | Add a playlist, channel, or profile URL to yt-diff via `/list`. Use this for multi-video collections; for single videos use `add_video`. |
+| `add_video` | Add one video URL. URLs are normalized before submission: YouTube video IDs are extracted, iwara.tv slugs are stripped, tracking params removed. |
+| `add_videos` | Add multiple video URLs in one listing request. Each URL is normalized individually. |
+
+### Managing Content
+
+| Tool | Description |
+| --- | --- |
+| `set_playlist_monitoring` | Update a playlist's monitoring mode (`Start`, `End`, `Full`, `N/A`) via `/watch`. |
+| `download` | Trigger downloads for one or more video URLs via `/download`. URLs are normalized before submission. |
+| `delete_playlist` | Delete a playlist entry via `/delplay`. Flags control whether mappings, DB records, and disk files are removed. |
+| `delete_videos` | Remove video entries from a playlist sublist via `/delsub`. Accepts `mapping_ids` (preferred) or `video_urls`. |
+
+### Maintenance
+
+| Tool | Description |
+| --- | --- |
+| `reindex_all` | Trigger `/reindexall` to refresh metadata for all tracked videos from yt-dlp. |
+| `deduplicate` | Scan the database for videos stored under multiple different URLs (same `videoId`, different `videoUrl` PK) and optionally merge them. **Defaults to `dry_run: true`** — safe to call for inspection. Set `dry_run: false` only when ready to apply changes. Accepts optional `site_filter` (e.g. `"iwara.tv"`) to scope the scan. |
+| `raw_post` | Advanced allow-listed POST escape hatch for yt-diff endpoints (`/getplay`, `/getsub`, `/list`, `/download`, `/watch`, `/delplay`, `/delsub`, `/getfile`, `/getfiles`, `/refreshfile`, `/refreshfiles`, `/reindexall`, `/dedup`, `/isregallowed`). |
 
 ## Configuration
 
@@ -117,3 +139,10 @@ This starts the server, sends `initialize` and `tools/list`, and verifies that t
 - `/list` requires `urlList` to be an array; this server handles that for `add_video` and `add_videos`.
 - The server retries once with a fresh token after a `401`.
 - `raw_post` is restricted to known yt-diff API paths; it is not an arbitrary HTTP client.
+- All video URLs submitted through `add_video`, `add_videos`, and `download` are normalized client-side before sending to the API:
+  - YouTube video IDs are extracted from any URL form: `youtu.be/{id}`, `m.youtube.com/watch?v={id}`, `watch?v={id}&list=...&start_radio=1`, `shorts/{id}`, etc. All resolve to `https://www.youtube.com/watch?v={id}`.
+  - iwara.tv title slugs are stripped: `/video/{id}/{slug}` → `/video/{id}`.
+  - Tracking/noise parameters (`utm_*`, `fbclid`, `gclid`, `si`, `pp`) are removed from all URLs.
+  - Protocol is forced to `https://`.
+  - The yt-diff backend applies the same normalization independently — this is defense-in-depth.
+- `deduplicate` should be run with `dry_run: true` first to preview changes. Once satisfied, re-run with `dry_run: false` to merge. Use `site_filter` to limit the scan to one site.
