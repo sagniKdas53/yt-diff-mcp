@@ -122,6 +122,12 @@ def normalize_url(url: str) -> str:
         if m:
             return urlunparse(("https", host, m.group(1), "", "", ""))
 
+    # 4c. spankbang.com — strip title slug: /{id}/video/{slug} → /{id}/video
+    if host == "spankbang.com" or host.endswith(".spankbang.com"):
+        m = re.match(r'(/[A-Za-z0-9]+/video)', parsed.path)
+        if m:
+            return urlunparse(("https", host, m.group(1), "", "", ""))
+
     # Generic: rebuild with cleaned params
     clean_qs = urlencode(qs_pairs)
     return urlunparse(("https", host, parsed.path, "", clean_qs, ""))
