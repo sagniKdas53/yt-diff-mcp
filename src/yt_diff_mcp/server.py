@@ -444,20 +444,47 @@ def tool_raw_post(args: dict[str, Any]) -> dict[str, Any]:
     path = str(args.get("path", "")).strip()
     if not path.startswith("/"):
         raise ValueError("path must start with /")
-    allowed = {"/getplay", "/getsub", "/list", "/download", "/watch", "/delplay", "/delsub", "/getfile", "/getfiles", "/refreshfile", "/refreshfiles", "/reindexall", "/dedup", "/isregallowed"}
+    allowed = {"/getplay", "/getsub", "/list", "/download", "/watch", "/delplay", "/delsub", "/getfile", "/getfiles", "/refreshfile", "/refreshfiles", "/reindexall", "/dedup-unlisted", "/dedup-playlists", "/isregallowed", "/register", "/login"}
     if path not in allowed:
         raise ValueError(f"path not allowed: {path}")
     payload = args.get("payload") or {}
     if not isinstance(payload, dict):
         raise ValueError("payload must be an object")
-    if path == "/isregallowed":
+    if path in ("/isregallowed", "/register", "/login"):
         status, body, raw = http_post(path, payload, timeout=TIMEOUT)
         return content({"status_code": status, "body": body, "raw": raw})
     return content(authed_post(path, payload, timeout=TIMEOUT))
 
 
+def tool_check_sign_up_allowed(args: dict[str, Any]) -> dict[str, Any]:
+    status, body, raw = http_post("/isregallowed", {"sendStats": False}, timeout=TIMEOUT)
+    return content({"status_code": status, "body": body, "raw": raw})
+
+
+def tool_sign_up(args: dict[str, Any]) -> dict[str, Any]:
+    username = args.get("username", "").strip()
+    password = args.get("password", "")
+    if not username or not password:
+        raise ValueError("username and password are required")
+    status, body, raw = http_post("/register", {"userName": username, "password": password}, timeout=TIMEOUT)
+    return content({"status_code": status, "body": body, "raw": raw})
+
+
+def tool_login(args: dict[str, Any]) -> dict[str, Any]:
+    username = args.get("username", "").strip()
+    password = args.get("password", "")
+    if not username or not password:
+        raise ValueError("username and password are required")
+    status, body, raw = http_post("/login", {"userName": username, "password": password}, timeout=TIMEOUT)
+    if status == 200 and isinstance(body, dict) and "token" in body:
+        token = str(body["token"])
+        CACHE.parent.mkdir(parents=True, exist_ok=True)
+        CACHE.write_text(json.dumps({"token": token, "created_at": datetime.now(timezone.utc).isoformat(), "base": BASE}), encoding="utf-8")
+    return content({"status_code": status, "body": body, "raw": raw})
+
+
 def tool_deduplicate(args: dict[str, Any]) -> dict[str, Any]:
-    """Scan the database for duplicate video records (same videoId, different videoUrl)
+    """Scan the database for duplicate records (videos or playlists)
     and optionally merge them. Always defaults to dry_run=True for safety.
     """
     payload: dict[str, Any] = {
@@ -465,7 +492,16 @@ def tool_deduplicate(args: dict[str, Any]) -> dict[str, Any]:
     }
     if args.get("site_filter"):
         payload["siteFilter"] = str(args["site_filter"])
-    return content(authed_post("/dedup", payload, timeout=TIMEOUT))
+        
+    target = args.get("target", "both")
+    results = {}
+    
+    if target in ("both", "unlisted"):
+        results["unlisted"] = authed_post("/dedup-unlisted", payload, timeout=TIMEOUT)
+    if target in ("both", "playlists"):
+        results["playlists"] = authed_post("/dedup-playlists", payload, timeout=TIMEOUT)
+        
+    return content(results)
 
 
 TOOLS: dict[str, tuple[str, dict[str, Any], Callable[[dict[str, Any]], dict[str, Any]]]] = {
@@ -550,16 +586,21 @@ TOOLS: dict[str, tuple[str, dict[str, Any], Callable[[dict[str, Any]], dict[str,
     ),
     # --- Advanced ---
     "reindex_all": ("Trigger yt-diff reindex-all job via /reindexall.", {"type": "object", "properties": {"start": {"type": ["integer", "string"]}, "stop": {"type": ["integer", "string"]}, "site_filter": {"type": "string"}, "chunk_size": {"type": ["integer", "string"]}}}, tool_reindex_all),
+    "check_sign_up_allowed": ("Check if new user registration is currently allowed by the server.", {"type": "object", "properties": {}}, tool_check_sign_up_allowed),
+    "sign_up": ("Register a new user account with yt-diff.", {"type": "object", "properties": {"username": {"type": "string"}, "password": {"type": "string"}}, "required": ["username", "password"]}, tool_sign_up),
+    "login": ("Login to yt-diff and cache the authentication token for subsequent requests.", {"type": "object", "properties": {"username": {"type": "string"}, "password": {"type": "string"}}, "required": ["username", "password"]}, tool_login),
     "deduplicate": (
-        "Scan the database for videos stored under multiple different URLs (same videoId, different videoUrl PK) "
-        "and optionally merge them into one canonical record. "
+        "Scan the database for duplicate videos (/dedup-unlisted) and playlists (/dedup-playlists) "
+        "and optionally merge them. "
         "Always defaults to dry_run=True — set dry_run=False only when you are ready to apply changes. "
-        "Use site_filter (e.g. 'iwara.tv') to scope the scan to one site.",
+        "Use site_filter (e.g. 'iwara.tv') to scope the scan. "
+        "Use target ('both', 'unlisted', 'playlists') to choose what to deduplicate.",
         {
             "type": "object",
             "properties": {
                 "dry_run": {"type": "boolean", "default": True},
                 "site_filter": {"type": "string"},
+                "target": {"type": "string", "enum": ["both", "unlisted", "playlists"], "default": "both"},
             },
         },
         tool_deduplicate,
